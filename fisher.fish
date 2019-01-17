@@ -84,7 +84,7 @@ function _fisher_self_complete
     complete -xc fisher -n __fish_use_subcommand -a help -d "Show usage help"
     complete -xc fisher -n __fish_use_subcommand -a version -d "$fisher_version"
     complete -xc fisher -n __fish_use_subcommand -a self-update -d "Update to the latest version"
-    for pkg in (_fisher_ls | _fisher_fmt | _fisher_filter)
+    for pkg in (fisher ls)
         complete -xc fisher -n "__fish_seen_subcommand_from rm" -a $pkg
     end
 end
@@ -110,12 +110,13 @@ function _fisher_ls
 end
 
 function _fisher_fmt
+# ? after dot|PWD fix #513
     command sed "s|^[[:space:]]*||;s|^$fisher_config/||;s|^$HOME|~|;s|^\.\/|$PWD/|;s|^github\.com/||;s|^https*://||;s|/*\$||"
 end
 
 function _fisher_file -a file
     set -e argv[1]
-    _fisher_fmt < $file | _fisher_read $argv
+    _fisher_fmt <$file | _fisher_diff R $argv
 end
 
 function _fisher_filter
@@ -224,10 +225,10 @@ function _fisher_commit -a cmd
         end
     end
 
-    if test -z "$new_pkgs$old_pkgs$rm_pkgs$next_pkgs"
-        echo "nothing to commit -- try adding some packages" >&2
-        return 1
-    end
+    # if test -z "$new_pkgs$old_pkgs$rm_pkgs$next_pkgs"
+    #     echo "nothing to commit -- try adding some packages" >&2
+    #     return 1
+    # end
 
     set -l actual_pkgs
     if test "$cmd" = "rm"
@@ -240,7 +241,7 @@ function _fisher_commit -a cmd
         end
     end
 
-    _fisher_fmt <$fishfile | _fisher_write $cmd $actual_pkgs >$fishfile.
+    _fisher_fmt <$fishfile | _fisher_diff W $cmd $actual_pkgs >$fishfile.
     command mv -f $fishfile. $fishfile
 
     _fisher_self_complete
@@ -258,56 +259,23 @@ function _fisher_commit -a cmd
     ' >&2
 end
 
-function _fisher_read -a cmd
-    set -e argv[1]
-    command awk -v FS="[[:space:]]*#" -v CMD="$cmd" -v ARGS="$argv" '
+function _fisher_diff -a diff cmd
+    set -e argv[1..2]
+    command awk -v FS="[[:space:]]*#" -v DIFF="$diff" -v CMD="$cmd" -v ARGSTR="$argv" '
         BEGIN {
-            split(ARGS, args, " ")
-            for (i in args) {
-                if (!((k = getkey(args[i])) in pkgs)) {
-                    pkgs[k] = args[i]
-                    if (CMD == "add") out[n++] = args[i]
-                }
-            }
+            for (n = split(ARGSTR, a, " "); i++ < n;) pkgs[getkey(a[i])] = a[i]
         }
-        !/^#/ && NF {
-            if (!file[k = getkey($1)]++ && !(k in pkgs)) out[n++] = $1
-        }
+        { k = getkey($1) }
+        DIFF == "R" && !(k in pkgs) && $0 = $1
+        DIFF == "W" && (/^#/ || !NF || (k in pkgs && $0 = pkgs[k]) || CMD != "rm")
+        DIFF == "W" || CMD == "rm" { delete pkgs[k] }
         END {
-            for (i = 0; i < n; i++) print out[i]
-            if (CMD == "rm") {
-                for (pkg in pkgs) {
-                    if (!(pkg in file)) {
-                        print "cannot remove \""pkg"\" -- package not listed in fishfile" > "/dev/stderr"
-                    }
-                }
+            for (k in pkgs) {
+                if (CMD != "rm" || DIFF == "W") print pkgs[k]
+                else print "package not in fishfile: \""k"\"" > "/dev/stderr"
             }
         }
-        function getkey(s) {
-            return (split(s, a, /@+|:/) > 2) ? a[2]"/"a[1]"/"a[3] : a[1]
-        }
-    '
-end
-
-function _fisher_write -a cmd
-    set -e argv[1]
-    command awk -v CMD="$cmd" -v ARGS="$argv" '
-        BEGIN {
-            split(ARGS, args, " ")
-            for (i in args) pkgs[getkey(args[i])] = args[i]
-        }
-        {
-            if (/^#/ || !NF) print $0
-            else {
-                k = getkey($0)
-                if (out = pkgs[k] != 0 ? pkgs[k] : CMD != "rm" ? $0 : "") print out
-                pkgs[k] = 0
-            }
-        }
-        END {
-            for (k in pkgs) if (pkgs[k]) print pkgs[k]
-        }
-        function getkey(s) {
+        function getkey(s,  a) {
             return (split(s, a, /@+|:/) > 2) ? a[2]"/"a[1]"/"a[3] : a[1]
         }
     '
@@ -404,7 +372,7 @@ function _fisher_deps
         if test ! -d "$pkg"
             echo $pkg
         else if test -s "$pkg/fishfile"
-            _fisher_deps (_fisher_fmt < $pkg/fishfile | _fisher_read)
+            _fisher_deps (_fisher_fmt < $pkg/fishfile | _fisher_diff R)
         end
     end
 end
